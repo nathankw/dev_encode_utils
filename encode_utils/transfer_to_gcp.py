@@ -137,35 +137,35 @@ def copy_files_to_gcp(s3_bucket, s3_paths, gcp_bucket, gcp_project, description=
     print("Created transfer job with ID {}: {}".format(job_id, json.dumps(job, indent=4)))
     return job
 
-def get_transfers_from_job(gcp_project, transferjob_name):
-    """
-    Fetches descriptions in JSON format of any realized transfers under the specified transferJob.
-    These are called transferOperations in the Google Storage Transfer API terminology.
-
-    See Google API example at https://cloud.google.com/storage-transfer/docs/create-manage-transfer-program?hl=ja
-    in the section called "Check transfer operation status".
-    See API details at https://cloud.google.com/storage-transfer/docs/reference/rest/v1/transferOperations.
-
-    Args:
-        gcp_project: `str`. The GCP project in which the transferJob specified by transferjob_name
-            was created. The underlying API call requires that this be specified, and it can be
-            given in either integer form  or the user-friendly name form (i.e. sigma-night-207122).
-        transferjob_name: `str`. The value of the `name` key in the dictionary that is returned by
-          copy_files_to_gcp().
-
-    Returns:
-        `list` of transferOperations belonging to the specified transferJob. This will be a list
-            of only a single element if the transferJob is a one-off transfer. But if this is a
-            repeating transferJob, then there could be several transferOperations in the list.
-    """
-    filt = {}
-    filt["project_id"] = gcp_project
-    filt["job_names"] = [transferjob_name]
-    query = storagetransfer.transferOperations().list(
-        name="transferOperations",
-        filter=json.dumps(filt))
-    return query.execute()["operations"]
-
+#def get_transfers_from_job(gcp_project, transferjob_name):
+#    """
+#    Fetches descriptions in JSON format of any realized transfers under the specified transferJob.
+#    These are called transferOperations in the Google Storage Transfer API terminology.
+#
+#    See Google API example at https://cloud.google.com/storage-transfer/docs/create-manage-transfer-program?hl=ja
+#    in the section called "Check transfer operation status".
+#    See API details at https://cloud.google.com/storage-transfer/docs/reference/rest/v1/transferOperations.
+#
+#    Args:
+#        gcp_project: `str`. The GCP project in which the transferJob specified by transferjob_name
+#            was created. The underlying API call requires that this be specified, and it can be
+#            given in either integer form  or the user-friendly name form (i.e. sigma-night-207122).
+#        transferjob_name: `str`. The value of the `name` key in the dictionary that is returned by
+#          copy_files_to_gcp().
+#
+#    Returns:
+#        `list` of transferOperations belonging to the specified transferJob. This will be a list
+#            of only a single element if the transferJob is a one-off transfer. But if this is a
+#            repeating transferJob, then there could be several transferOperations in the list.
+#    """
+#    filt = {}
+#    filt["project_id"] = gcp_project
+#    filt["job_names"] = [transferjob_name]
+#    query = storagetransfer.transferOperations().list(
+#        name="transferOperations",
+#        filter=json.dumps(filt))
+#    return query.execute()["operations"]
+#
 #def get_transfer_status(gcp_project, transferjob_name):
 #    """
 #    Returns the transfer status of the first transferOperation that is returned for the given
