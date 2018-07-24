@@ -166,24 +166,24 @@ def get_transfers_from_job(gcp_project, transferjob_name):
         filter=json.dumps(filt))
     return query.execute()["operations"]
 
-def get_transfer_status(gcp_project, transferjob_name):
-    """
-    Returns the transfer status of the first transferOperation that is returned for the given
-    transferJob. Thus, this function really only makes sense for one-off transferJobs that don't
-    repeat.
-
-    Note: if a transferJob attempts to transfer a non-existing file from the source bucket,
-    this has no effect on the transferOperation status (it will not cause a FAILED status).
-    Moreover, transferOperation status doesn't look at what files were and were not transferred and is
-    ony concerned with the execution status of the transferOperation job itself.
-
-    Args:
-        gcp_project: `str`. The GCP project in which the transferJob specified by transferjob_name
-            was created. The underlying API call requires that this be specified, and it can be
-            given in either integer form  or the user-friendly name form (i.e. sigma-night-207122).
-        transferjob_name: `str`. The value of the `name` key in the dictionary that is returned by
-          copy_files_to_gcp().
-    """
-    meta = get_transfers_from_job(gcp_project=gcp_project, transferjob_name=transferjob_name)[0]["metadata"]
-    return meta["status"]
-
+#def get_transfer_status(gcp_project, transferjob_name):
+#    """
+#    Returns the transfer status of the first transferOperation that is returned for the given
+#    transferJob. Thus, this function really only makes sense for one-off transferJobs that don't
+#    repeat.
+#
+#    Note: if a transferJob attempts to transfer a non-existing file from the source bucket,
+#    this has no effect on the transferOperation status (it will not cause a FAILED status).
+#    Moreover, transferOperation status doesn't look at what files were and were not transferred and is
+#    ony concerned with the execution status of the transferOperation job itself.
+#
+#    Args:
+#        gcp_project: `str`. The GCP project in which the transferJob specified by transferjob_name
+#            was created. The underlying API call requires that this be specified, and it can be
+#            given in either integer form  or the user-friendly name form (i.e. sigma-night-207122).
+#        transferjob_name: `str`. The value of the `name` key in the dictionary that is returned by
+#          copy_files_to_gcp().
+#    """
+#    meta = get_transfers_from_job(gcp_project=gcp_project, transferjob_name=transferjob_name)[0]["metadata"]
+#    return meta["status"]
+#
