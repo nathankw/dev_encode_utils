@@ -15,7 +15,7 @@ import googleapiclient.discovery
 # List of APIs that google-api-python-client can use at https://developers.google.com/api-client-library/python/apis/
 # Storage Transfer API docs at https://developers.google.com/resources/api-libraries/documentation/storagetransfer/v1/python/latest/
 
-#storagetransfer = googleapiclient.discovery.build('storagetransfer', 'v1')
+storagetransfer = googleapiclient.discovery.build('storagetransfer', 'v1')
 
 #def copy_files_to_gcp(s3_bucket, s3_paths, gcp_bucket, gcp_project, description="", aws_creds=()):
 #    """
