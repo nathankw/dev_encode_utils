@@ -848,6 +848,24 @@ class Connection():
                  as many times as you want on the Portal when not providing an alias.  Furthermore,
                  submitting labs should include at least one alias per record being submitted
                  to the Portal for traceabilty purposes in the submitting lab.
+
+        Returns:
+            `dict`: The JSON response from the POST operation, or the existing record if it already
+            exists on the Portal (where a GET on any of it's aliases, when provided in the payload,
+            finds the existing record).
+
+        Raises:
+            encode_utils.connection.AwardPropertyMissing: The `award` property isn't present in the payload and there isn't a
+                defualt set by the environment variable `DCC_AWARD`.
+            encode_utils.connection.LabPropertyMissing: The `lab` property isn't present in the payload and there isn't a
+                default set by the environment variable `DCC_LAB`.
+            encode_utils.connection.MissingAlias: The argument 'require_aliases' is set to True and
+                the 'aliases' property is missing in the payload or is empty.
+            encode_utils.connection.requests.exceptions.HTTPError: The return status is not ok.
+
+        Side effects:
+            self.PROFILE_KEY will be popped out of the payload if present, otherwise, the key "@id"
+            will be popped out. Furthermore, self.ENCID_KEY will be popped out if present in the payload.
         """
         self.debug_logger.debug("\nIN post().")
         # Make sure we have a payload that can be converted to valid JSON, and
