@@ -824,3 +824,104 @@ class Connection():
         #... None yet.
 
         return payload
+
+    def post(self, payload, require_aliases=True):
+        """POST a record to the Portal.
+
+        Requires that you include in the payload the non-schematic key ``self.PROFILE_KEY`` to
+        designate the name of the ENCODE object profile that you are submitting to, or the
+        actual `@id` property itself.
+
+        If the `lab` property isn't present in the payload, then the default will be set to the value
+        of the `DCC_LAB` environment variable. Similarly, if the `award` property isn't present, then the
+        default will be set to the value of the `DCC_AWARD` environment variable.
+
+        Before the POST is attempted, any pre-POST hooks are fist called (see the method
+        ``self.before_submit_hooks``).
+        """
+        self.debug_logger.debug("\nIN post().")
+        # Make sure we have a payload that can be converted to valid JSON, and
+        # tuples become arrays, ...
+        payload = json.loads(json.dumps(payload))
+        profile_id = self.get_profile_from_payload(payload)
+        payload[self.PROFILE_KEY] = profile_id
+        url = os.path.join(self.dcc_url, profile_id)
+        if self.ENCID_KEY in payload:
+            # Shouldn't be here, unless maybe a PATCH was attempted and the record didn't exist, so
+            # a POST was then attempted.
+            payload.pop(self.ENCID_KEY)
+        # Check if we need to add defaults for 'award' and 'lab' properties:
+        if profile_id not in eup.Profile.AWARDLESS_PROFILE_IDS:  # No lab prop for these profiles either.
+            if eu.AWARD_PROP_NAME not in payload:
+                if not eu.AWARD:
+                    raise AwardPropertyMissing
+                payload.update(eu.AWARD)
+            if eu.LAB_PROP_NAME not in payload:
+                if not eu.LAB:
+                    raise LabPropertyMissing
+                payload.update(eu.LAB)
+
+        # Run 'before' hooks:
+        payload = self.before_submit_hooks(payload, method=self.POST)
+        # Remove the non-schematic self.PROFILE_KEY if being used, which was added above since some
+        # 'before' hooks may need it. Also check for the `@id` property and remove it too if found.
+        try:
+            payload.pop(self.PROFILE_KEY)
+        except KeyError:
+            pass
+        try:
+            payload.pop("@id")
+        except KeyError:
+            pass
+
+        no_alias = False #Use this to check later if doing a GET
+        aliases = payload.get(eu.ALIAS_PROP_NAME)
+        if not aliases:
+            if profile_id in eup.Profile.NO_ALIAS_PROFILE_IDS or not require_aliases:
+                aliases = ["N/A"]
+                no_alias = True
+            else:
+                raise MissingAlias(
+                    ("Missing property '{}' in payload {}. This is required by default for the profiles"
+                     " that include this property, and can be disabled by setting the `require_aliases`"
+                     " argument to False in the call to this method, being `encode_utils.connection.Connection.post()`").format(eu.ALIAS_PROP_NAME,payload))
+
+        # Validate the payload against the schema
+        ### This doesn't work as locally I can't use jsonschema to validate a profile with
+        ### custom objects specified in the value of a linkTo property.
+        #self.debug_logger.debug("Validating the payload against the schema")
+        #validation_error = euu.err_context(payload=payload, schema=eup.Profile.PROFILES[profile_id])
+        #if validation_error:
+        #    self.log_error("Invalid schema instance of the {} profile.".format(profile_id))
+        #    self.debug_logger.debug("Payload is: {}".format(euu.print_format_dict(payload)))
+        #    self.log_error(validation_error[0]) # The top-level validation message
+        #    if validation_error[1]: # The validation context can be empty
+        #        self.debug_logger.debug(euu.print_format_dict(validation_error[1]))
+        #    raise Exception(euu.print_format_dict(validation_error[0]))
+
+        self.debug_logger.debug(
+            ("<<<<<< POST {alias} To DCC with URL {url} and this"
+             " payload:\n\n{payload}\n\n").format(alias=aliases[0], url=url, payload=euu.print_format_dict(payload)))
+
+        if self.check_dry_run():
+            return {}
+        response = requests.post(url,
+                                 auth=self.auth,
+                                 timeout=eu.TIMEOUT,
+                                 headers=euu.REQUEST_HEADERS_JSON,
+                                 json=payload,
+                                 verify=False)
+        #response_json = response.json()["@graph"][0]
+        response_json = response.json()
+
+        if response.ok:
+            self.debug_logger.debug("Success.")
+            response_json = response_json["@graph"][0]
+            encid = ""
+            try:
+                encid = response_json["accession"]
+            except KeyError:
+                # Some objects don't have an accession, i.e. replicates.
+                encid = response_json["uuid"]
+            self._log_post(aliases=aliases, dcc_id=encid)
+            # Run 'after' hooks:
