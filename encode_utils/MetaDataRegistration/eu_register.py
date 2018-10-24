@@ -8,7 +8,7 @@
 ###
 
 """
-Given a tab-delimited input file containing one or more records belonging to one of the profiles
+Given a tab-delimited or JSON input file containing one or more records belonging to one of the profiles
 listed on the ENCODE Portal (such as https://www.encodeproject.org/profiles/biosample.json),
 either POSTS or PATCHES the records. The default is to POST each record; to PATCH instead, see
 the ``--patch`` option.
@@ -81,14 +81,17 @@ def get_parser():
     values need to be submitted as integers, not strings).""")
 
     parser.add_argument("-i", "--infile", required=True, help="""
-    The tab-delimited input file with a field-header line as the first line.
+    The JSON input file or tab-delimited input file. 
+
+    **The tab-delimited file format:**
+    Must have a field-header line as the first line.
     Any lines after the header line that start with a '#' will be skipped, as well as any empty lines.
-    The field names must be
-    exactly equal to the corresponding property names in the corresponding profile. Non-scematic fields
-    are allowed as long as they begin with a '#'; they will be skipped. If a property has an
-    array data type (as indicated in the profile's documentation on the Portal), the array literals
-    '[' and ']' are optional. Values within the array must be comma-delimited. For example, if a
-    property takes an array of strings, then you can use either of these as the value:
+    The field names must be exactly equal to the corresponding property names in the corresponding 
+    profile. Non-scematic fields are allowed as long as they begin with a '#'; they will be 
+    skipped. If a property has an array data type (as indicated in the profile's documentation 
+    on the Portal), the array literals '[' and ']' are optional. Values within the array must 
+    be comma-delimited. For example, if a property takes an array of strings, then you can use 
+    either of these as the value:
 
     1) str1,str2,str3
     2) [str1,str2,str3]
@@ -101,6 +104,11 @@ def get_parser():
     1) {"name": "eGFP", "location": "C-terminal"},{"name": "FLAG","C-terminal"}
     2) [{"name": "eGFP", "location": "C-terminal"},{"name": "FLAG","C-terminal"}]
 
+    **The JSON input file**
+    Can be a single JSON object, or an array of JSON objects. Key names must match property names of
+    an ENCODE record type (profile).
+
+    **The following applies to either input file formats**
     When patching objects, you must specify the 'record_id' field to indicate the identifier of the record.
     Note that this a special field that is not present in the ENCODE schema, and doesn't use the '#'
     prefix to mark it as non-schematic. Here you can specify any valid record identifier
@@ -108,7 +116,8 @@ def get_parser():
 
     Some profiles (most) require specification of the 'award' and 'lab' attributes. These may be set
     as fields in the input file, or can be left out, in which case the default values for these
-    attributes will be pulled from the environment variables DCC_AWARD and DCC_LAB, respectively.""")
+    attributes will be pulled from the environment variables DCC_AWARD and DCC_LAB, respectively.
+    """)
 
     parser.add_argument("--patch", action="store_true", help="""
     Presence of this option indicates to PATCH an existing DCC record rather than register a new one.""")
@@ -180,15 +189,61 @@ def check_valid_json(prop, val, row_count):
     return json_val
 
 
-def typecast(value, value_type):
+def typecast(field_name, value, data_type, line_num):
     """
+    Converts the value to the specified data type. Used to convert string representations of integers
+    in the input file to integers, and string representations of booleans to booleans.
+
+    Args:
+        field_name: The name of the field in the input file whose value is being potentially typecast.
+            Used only in error messages. 
+        value: The value to potentially typecast.
+        data_type: Specifies the data type of field_name as indicated in the ENCODE profile. 
+        line_num: The current line number in the input file. Used only in error messages. 
     """
-    if value_type == "integer":
+    if data_type == "integer":
         return int(value)
+    elif data_type == "boolean":
+        value = value.lower() 
+        if value not in ["true", "false"]:
+            raise Exception("Can't convert value '{}' in field '{}' on line {} to data type '{}'.".format(value, field_name, line_num, data_type))
+        value = json.loads(value)
     return value
 
 
 def create_payloads(profile_id, infile):
+    """
+    First attempts to read the input file as JSON. If that fails, tries the TSV parser.
+    """
+    try:
+        with open(infile) as f:
+            payloads = json.load(f)
+        return create_payloads_from_json(profile_id, payloads)
+    except ValueError:
+        return create_payloads_from_tsv(profile_id, infile)
+
+
+def create_payloads_from_json(profile_id, payloads):
+    """
+    Generates payloads from a JSON file
+
+    Args:
+        profile_id: str. The identifier for a profile on the Portal. For
+        example, use genetic_modificaiton for the profile https://www.encodeproject.org/profiles/genetic_modification.json.
+        payloads: dict or list parsed from a JSON input file.
+
+    Yields: dict. The payload that can be used to either register or patch the
+    metadata for each row.
+    """
+    if isinstance(payloads, dict):
+        payloads = [payloads]
+    profile = eup.Profile(profile_id)
+    for payload in payloads:
+        payload[euc.Connection.PROFILE_KEY] = profile.profile_id
+        yield payload
+
+
+def create_payloads_from_tsv(profile_id, infile):
     """
     Generates the payload for each row in 'infile'.
 
@@ -271,9 +326,9 @@ def create_payloads(profile_id, infile):
                         val = val[:-1]
                     val = [x.strip() for x in val.split(",")]
                     # Type cast tokens if need be, i.e. to integers:
-                    val = [typecast(value=x, value_type=item_val_type) for x in val]
+                    val = [typecast(field_name=field, value=x, data_type=item_val_type, line_num=line_count) for x in val]
             else:
-                val = typecast(value=val, value_type=schema_val_type)
+                val = typecast(field_name=field, value=val, data_type=schema_val_type, line_num=line_count)
             payload[field] = val
         yield payload
 

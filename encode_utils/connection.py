@@ -11,7 +11,6 @@ import json
 import logging
 import mimetypes
 import os
-import pdb
 import re
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -89,12 +88,12 @@ class S3ToGCPFailed(Exception):
 class Connection():
     """Handles communication with the Portal regarding data submission and retrieval.
 
-    In order to authenticate with the DCC servers when making HTTP requests, you must have the
+    For data submission or modification, and working with non-released datasets, you must have
     the environment variables `DCC_API_KEY` and `DCC_SECRET_KEY` set. Check with your DCC data wrangler
     if you haven't been assigned these keys.
 
     There are three log files opened in append mode in the directory specified by ``connection.LOG_DIR`` that
-    are specific to whichver Portal you are connected to. When connected to Production, each log file
+    are specific to whichever Portal you are connected to. When connected to Production, each log file
     name will include the token '_prod_'. For Development, the token will be '_dev_'. The three
     log files are named accordingly in reference to their purpose, and are classified as:
 
@@ -114,7 +113,7 @@ class Connection():
     #: identifier for a record, such as alias, accession, uuid, md5sum, ... depending on
     #: the object being submitted.
     #: This is not a valid property of any ENCODE object schema, and is used in the ``patch()``
-    #: (and ``send()`` when doing a PATCH) instance method  to designate the record to update.
+    #: instance method to designate the record to update.
     ENCID_KEY = "_enc_id"
 
     #: Identifies the name of the key in the payload that stores the ID of the profile
@@ -175,7 +174,7 @@ class Connection():
 
         #: Indicates whether this class is being use to submit objects to the Portal. The main
         #: effect of setting this option to True is to update the default behavior of the
-        #: ``self.get()`` method, such that it it fetches its payload through the databsse directly
+        #: ``self.get()`` method, such that it it fetches its payload through the database directly
         #: rather than any index. That is useful when you are submitting several inter-dependent
         #: objects in turn and the new objects haven't yet had time to be indexed (otherwise you risk
         #: getting a 404 response back meaning "Resource Not Found". This attribute can be also set
@@ -277,14 +276,33 @@ class Connection():
         secret_key = os.environ.get("DCC_SECRET_KEY")
         return api_key, secret_key
 
-    def _log_post(self, alias, dcc_id):
-        """Uses the self.post_logger to log the submitted object's alias and dcc_id.
-
-        Each message is written in a two column format delimted by a tab character. The columns are:
-          1) alias (the first that appeared in the 'aliases' key in the payload), and
-          2) DCC identifier
+    def _log_post(self, aliases, dcc_id):
         """
-        entry = alias + "\t" + dcc_id
+        Uses the self.post_logger to log a newly POSTED object's aliases and dcc_id. 
+        Each message is written in a three column format delimited by a tab character. The columns are:
+          1) primary alias: The first alias appearing in the provided 'aliases' list argument.
+          2) secondary aliases: Any additional aliases appearing in the provided 'aliases' list argument.
+                 These will be comma-delimited.
+          2) DCC identifier: The value of the dcc_id argument. 
+
+        Note that it is possible that the aliases list is empty, in which case only the dcc_id will
+        be present in the last column of the written line. 
+
+        Args:
+            aliases: `list`. The value of the 'aliases' key in the payload for the record that
+                was POSTED.
+            dcc_id: `str`. An ENCODE-generated identifier on the ENCODE Portal for the new record
+                that was POSTED, i.e. accession, uuid, md5sum.
+        """
+        try:
+            primary = aliases[0]
+        except KeyError:
+            primary = ""
+        try:
+            secondary = aliases[1:]
+        except KeyError:
+            secondary = []
+        entry = primary + "\t" + ",".join(secondary) + "\t" + dcc_id
         self.post_logger.info(entry)
 
     def set_submission(self, status):
@@ -340,7 +358,7 @@ class Connection():
         Returns:
             `list`: The aliases.
         """
-        record = self.get(ignore404=False, dcc_id=dcc_id)
+        record = self.get(ignore404=False, rec_ids=dcc_id)
         aliases = record[eu.ALIAS_PROP_NAME]
         for index in range(len(aliases)):
             alias = aliases[index]
@@ -370,7 +388,7 @@ class Connection():
         Returns:
             `str`: The URL containing the URL encoded query.
         """
-        # urllib doens't contain the parse() method until you import urllib3 (weird, but that's what I noticed).
+        # urllib doesn't contain the parse() method until you import urllib3 (weird, but that's what I noticed).
         query = urllib.parse.urlencode(search_args)
         url = os.path.join(self.dcc_url, "search/?") + query
         return url
@@ -384,7 +402,7 @@ class Connection():
         be added to the query parameters given in the URL.
 
         Args:
-            search_args: `list` of two-item tuples of the form ``[(key, val), (key, val) ,...] ``.
+            search_args: `list` of two-item tuples of the form ``[(key, val), (key, val) ,...]``.
                 To support a != style query, append "!" to the key name.
             url: `str`. A URL used to search for records interactively in the ENCODE Portal. The
                 query will be extracted from the URL.
@@ -561,7 +579,7 @@ class Connection():
                 url += "&datastore=database"
             if frame:
                 url += "&frame={frame}".format(frame=frame)
-            self.debug_logger.debug(">>>>>>GETTING {rec_id} From DCC with URL {url}".format(
+            self.debug_logger.debug(">>>>>>GET {rec_id} From DCC with URL {url}".format(
                 rec_id=r, url=url))
             response = requests.get(url,
                                     auth=self.auth,
@@ -660,9 +678,12 @@ class Connection():
 
     def before_submit_alias(self, payload):
         """
-        A pre-POST and pre-PATCH hook used to add the lab alias prefix to any aliases that are
-        missing it. The `DCC_LAB` environment variable is consulted to fetch the lab name, and if not
-        set then this will be a no-op.
+        A pre-POST and pre-PATCH hook used to 
+          1) Clean alias names by removing disallowed characters indicated by the DCC schema for
+             the alias property. 
+          2) Add the lab alias prefix to any aliases that are missing it. 
+             The `DCC_LAB` environment variable is consulted to fetch the lab name, and if not
+             set then this will be a no-op.
 
         Args:
             payload: `dict`. The payload to submit to the Portal.
@@ -672,7 +693,9 @@ class Connection():
         """
         if not eu.ALIAS_PROP_NAME in payload:
             return payload
-        payload[eu.ALIAS_PROP_NAME] = euu.add_alias_prefix(payload[eu.ALIAS_PROP_NAME])
+        aliases = euu.clean_aliases(payload[eu.ALIAS_PROP_NAME])
+        aliases = euu.add_alias_prefix(aliases)
+        payload[eu.ALIAS_PROP_NAME] = aliases
         return payload
 
     def before_submit_attachment(self, payload):
@@ -836,8 +859,8 @@ class Connection():
                 defualt set by the environment variable `DCC_AWARD`.
             encode_utils.connection.LabPropertyMissing: The `lab` property isn't present in the payload and there isn't a
                 default set by the environment variable `DCC_LAB`.
-            encode_utils.connection.MissingAlias: The argument 'require_aliases' is set to False and
-                the 'aliases' property is missing in the payload.
+            encode_utils.connection.MissingAlias: The argument 'require_aliases' is set to True and
+                the 'aliases' property is missing in the payload or is empty.
             encode_utils.connection.requests.exceptions.HTTPError: The return status is not ok.
 
         Side effects:
@@ -853,7 +876,7 @@ class Connection():
         url = os.path.join(self.dcc_url, profile_id)
         if self.ENCID_KEY in payload:
             # Shouldn't be here, unless maybe a PATCH was attempted and the record didn't exist, so
-            # a POST was then attempted. In face, self.send() can do just that.
+            # a POST was then attempted.
             payload.pop(self.ENCID_KEY)
         # Check if we need to add defaults for 'award' and 'lab' properties:
         if profile_id not in eup.Profile.AWARDLESS_PROFILE_IDS:  # No lab prop for these profiles either.
@@ -868,8 +891,8 @@ class Connection():
 
         # Run 'before' hooks:
         payload = self.before_submit_hooks(payload, method=self.POST)
-        # Remove the non-schematic self.PROFILE_KEY if being used. Also check for the `@id` property
-        # and remove if found too.
+        # Remove the non-schematic self.PROFILE_KEY if being used, which was added above since some
+        # 'before' hooks may need it. Also check for the `@id` property and remove it too if found.
         try:
             payload.pop(self.PROFILE_KEY)
         except KeyError:
@@ -904,10 +927,9 @@ class Connection():
         #        self.debug_logger.debug(euu.print_format_dict(validation_error[1]))
         #    raise Exception(euu.print_format_dict(validation_error[0]))
 
-        first_alias = aliases[0]
         self.debug_logger.debug(
-            ("<<<<<< POSTING {alias} To DCC with URL {url} and this"
-             " payload:\n\n{payload}\n\n").format(alias=first_alias, url=url, payload=euu.print_format_dict(payload)))
+            ("<<<<<< POST {alias} To DCC with URL {url} and this"
+             " payload:\n\n{payload}\n\n").format(alias=aliases[0], url=url, payload=euu.print_format_dict(payload)))
 
         if self.check_dry_run():
             return {}
@@ -929,7 +951,7 @@ class Connection():
             except KeyError:
                 # Some objects don't have an accession, i.e. replicates.
                 encid = response_json["uuid"]
-            self._log_post(alias=first_alias, dcc_id=encid)
+            self._log_post(aliases=aliases, dcc_id=encid)
             # Run 'after' hooks:
             self.after_submit_hooks(encid, profile_id, method=self.POST)
             return response_json
@@ -956,11 +978,11 @@ class Connection():
                 if not existing_record:
                     response.raise_for_status()
                 else:
-                    self.log_error("Will not POST '{}' since it already exists with aliases '{}'.".format(first_alias, existing_record["aliases"]))
+                    self.log_error("Will not POST '{}' since it already exists with aliases '{}'.".format(aliases[0], existing_record["aliases"]))
                     return existing_record
 
         else:
-            message = "Failed to POST {alias}".format(alias=first_alias)
+            message = f"Failed to POST {aliases[0]}"
             self.log_error(message)
             self.debug_logger.debug("<<<<<< DCC POST RESPONSE: ")
             self.debug_logger.debug(euu.print_format_dict(response_json))
@@ -1080,7 +1102,7 @@ class Connection():
         # and raise an Exception if one is present in the supplied 'props' list. Some properties,
         # such as accession, submitted_by, ..., still show up in a GET with 'frame="edit"', and
         # the Portal will most likely complain or silently disallow an attempt to remove such
-        # properites. Nonetheless, a well-behaved client shouln't send naughty requests, so some
+        # properites. Nonetheless, a well-behaved client shouldn't send uncouth requests, so some
         # checking is performed below for good measure:
         for prop in props:
             if profile.is_prop_required(prop):
@@ -1275,8 +1297,11 @@ class Connection():
             `dict`: `dict` containing the value of the 'upload_credentials' key in the JSON serialization
             of the file record represented by `file_id`. Will be empty if new upload credentials
             could not be issued.
+
+        Raises:
+            `requests.exceptions.HTTPError`: The response from the server isn't a successful status code.
         """
-        self.debug_logger.debug("Using curl to generate new file upload credentials")
+        self.debug_logger.debug("Attempting to generate new file upload credentials")
         # Don't use curl since it
         #   1) requires that all users have it installed, and
         #   2) only works for the most recent versions when interacting with the ENCODE servers.
@@ -1291,9 +1316,9 @@ class Connection():
             headers=euu.REQUEST_HEADERS_JSON,
             json = {},
             timeout=eu.TIMEOUT)
+        response_json = response.json()
         if response.ok:
-            response_json = response.json()
-            self.debug_logger.debug("Success: upload credentials for '{}' regerated.".format(file_id))
+            self.debug_logger.debug("Success: upload credentials for '{}' regenerated.".format(file_id))
             upload_creds = response_json["@graph"][0]["upload_credentials"]
             return upload_creds
         else:
@@ -1323,66 +1348,75 @@ class Connection():
 
         #Don't log the full response as it contains sensative security information.
 
-    def copy_files_to_gcp(self, file_ids, gcp_bucket, gcp_project, description="", aws_creds=()):
+    def gcp_transfer_urllist(self, file_ids, filename):
         """
-        Copies one or more ENCODE files from AWS S3 storage to GCP storage by using the Google Storage
-        Transfer Service. The transfer is scheduled to run in upto 1 minute from the time
-        this method is called.
+        Creates a "URL list" file to be used by the Google Storage Transfer Service (STS); see documentation at 
+        https://cloud.google.com/storage-transfer/docs/create-url-list. Once the URL list is created,
+        you need to upload it somewhere that Google STS can reach it via HTTP or HTTPS. I recommend
+        uploading the URL list to your GCS bucket. From there, you can get an HTTPS URL for it by 
+        clicking on your file name (while in the GCP Console) and then copying the URL shown in your 
+        Web browser, which can in turn be pasted directly in the Google STS.
 
-        AWS Credentials are fetched from the environment via the variables `AWS_ACCESS_KEY_ID` and
-        `AWS_SECRET_ACCESS_KEY`, unless passed explicitly to the aws_creds argument.
+        Args:
+            file_ids: `list` of file identifiers. The corresponding S3 objects must have public read
+                permission as required for the URL list.
+            filename: `str`. The output filename in TSV format, which can be fed into the Google STS.
+        """
+        fout = open(filename, 'w')
+        fout.write("TsvHttpData-1.0\n")
+        for i in file_ids:
+            url = self.s3_object_path(rec_id=i, url=True)
+            # One with DCC API keys can get the URL in a more straightforward manner by doing a GET on
+            # the files @@upload endpoint. But this even requires AWS keys even when the file in 
+            # question is released. For broader community support, the above workaround is in use.
+            rec = self.get(i, ignore404=False)
+            md5 = base64.b64encode(bytes.fromhex(rec["md5sum"]))
+            fout.write("\t".join([url, str(rec["file_size"]), md5.decode("utf-8")]) + "\n")
+        fout.close()
 
-        Google credentials are fetched from the environment via the variable
-        GOOGLE_APPLICATION_CREDENTIALS.  This should be set to the JSON file provided to you
-        by the GCP Console when you create a service account; see
-        https://cloud.google.com/docs/authentication/getting-started for more details. Note that
-        the service account that you create must have at least the two roles below:
+    def gcp_transfer_from_aws(self, file_ids, gcp_bucket, gcp_project, description="", aws_creds=()):
+        """
+        Copies one or more ENCODE files from AWS S3 storage to GCP storage by using the Google STS.
+        This is similar to the :meth:`gcp_transfer_urllist` method - the difference is that S3 object
+        paths are copied directly instead of HTTPS URIs.  
 
-          1) Project role with access level of Editor or greater.
-          2) Storage role with access level of Storage Object Creator or greater.
+        The downside of this approach, however, is that you must be a priviledged user (having DCC
+        API keys with the appropriate access) to be able to use this method since by default the 
+        encode buckets aren't discoverable to the public. That is, the S3 bucket policies deny the 
+        action s3:GetBucketLocation on the public principal. The error a non-priviledged user will
+        see when attempting to run this method is:
 
-        Note1: If this is the first time that you are using the Google Storage Transfer Service on
-        your GCP bucket, it won't work just yet as you'll get an error that reads:
+            googleapiclient.errors.HttpError: <HttpError 403 when requesting 
+            https://storagetransfer.googleapis.com/v1/transferJobs?alt=json returned "Failed to 
+            obtain the location of the source S3 bucket. Additional details: Access Denied">
 
-          Failed to obtain the location of the destination Google Cloud Storage (GCS) bucket due to
-          insufficient permissions.  Please verify that the necessary permissions have been granted.
-          (Google::Apis::ClientError)
-
-        To resolve this, I recommend that you go into the GCP Console and run a manual transfer there,
-        as this adds the missing permission that you need. I personaly don't know how to add it
-        otherwise, or even know what it is that's being added, but there you go!
-
-        Note2: If a file transfer doens't work (i.e. it doesn't exist in source bucket or incorrect
-        path provided), I'm not aware of a way to know that w/o explicitely having to inspect the GCP
-        bucket for presence/absence of the file. Even in the GCP Console, the Tranfer job stil shows as green
-        and doesn't indicate any sort of failure.
+        See :func:`encode_utils.transfer_to_gcp.Transfer` for full documentation.
 
         Args:
             file_ids: `list`. One or more ENCODE files to transfer. They can be any valid ENCODE File
                 object identifier. Don't mix ENCODE files from across buckets.
             gcp_bucket: `str`. The name of the GCP bucket.
             gcp_project: `str`. The GCP project that is associated with gcp_bucket. Can be given
-                in either integer form  or the user-friendly name form (i.e. sigma-night-207122)
+                in either integer form  or the user-friendly name form (i.e. sigma-night-206802)
             description: `str`. The description to show when querying transfers via the
                  Google Storage Transfer API, or via the GCP Console. May be left empty, in which
                  case the default description will be the value of the first S3 file name to transfer.
             aws_creds: `tuple`. Ideally, your AWS credentials will be stored in the environment.
                 For additional flexability though, you can specify them here as well in the form
                 ``(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)``.
+
+        Returns:
+            `dict`: The JSON response representing the newly created transferJob.
         """
         s3_paths = []
-        accessions = []
         for i in file_ids:
-            rec = self.get(rec_ids=i, ignore404=False)
-            accessions.append(rec["accession"])
-            s3_paths.append(rec["href"])
-         # Check first accession to determine what S3 bucket to use:
-        if accessions[0].startswith("ENCFF"):
-            s3_bucket = eu.ENCODE_PROD_S3BUCKET
-        else:
-            s3_bucket = eu.ENCODE_TEST_S3BUCKET
-        encode_utils.transfer_to_gcp.copy_files_to_gcp(s3_bucket=s3_bucket, s3_paths=s3_paths, gcp_bucket=gcp_bucket,
-                              gcp_project=gcp_project, description=description, aws_creds=aws_creds)
+            s3_paths.append(self.s3_object_path(rec_id=i))
+        t = encode_utils.transfer_to_gcp.Transfer(gcp_project=gcp_project, aws_creds=aws_creds)
+        # Figure out the s3 bucket by looking at the first s3 object. All specified s3 files should
+        # from the same bucket.
+        s3_bucket = s3_paths[0].split("/")[2]
+        transfer_job = t.from_s3(s3_bucket=s3_bucket, s3_paths=s3_paths, gcp_bucket=gcp_bucket, description=description)
+        return transfer_job
 
 
 #    def gsutil_copy_file_to_gcp(self, s3obj, gcp_dest, aws_creds=()):
@@ -1448,9 +1482,8 @@ class Connection():
               record's `submitted_file_name` property.
             set_md5sum: `bool`. True means to also calculate the md5sum and set the file record's md5sum
               property on the Portal (this currently is only implemented for local files, not S3).
-              This will always take place whenever the property isn't yet and when uploading a
+              This will always take place whenever the property isn't yet set and when uploading a
               local file.
-              set.
 
         Raises:
             encode_utils.connection.FileUploadFailed: The return code of the AWS upload command was non-zero.
@@ -1519,15 +1552,13 @@ class Connection():
             platforms.extend(fastq_json["platform"][eu.ALIAS_PROP_NAME])
         return list(set(platforms))
 
-    def post_document(self, download_filename, document, document_type, description):
+    def post_document(self, document, document_type, description):
         """POSTS a document to the Portal.
 
         The alias for the document will be the lab prefix plus the file name. The lab prefix is taken
         as the value of the `DCC_LAB` environment variable, i.e. 'michael-snyder'.
 
         Args:
-            download_filename: `str`. The name to give the document when downloading it from the ENCODE
-              portal.
             document_type: `str`. For possible values, see
               https://www.encodeproject.org/profiles/document.json. It appears that one should use
               "data QA" for analysis results documents.
@@ -1550,7 +1581,6 @@ class Connection():
         payload["document_type"] = document_type
         payload["description"] = description
 
-        #download_filename = library_alias.split(":")[1] + "_relative_knockdown.jpeg"
         attachment = self.set_attachment(document)
 
         payload['attachment'] = attachment
@@ -1599,9 +1629,9 @@ class Connection():
             verify=False)
         r.raise_for_status()
         content_length = r.headers.get("Content-Length")
-        self.debug_logger.debug("Downloading file {} from URL {}.".format(rec_id, url))
+        self.debug_logger.debug("GET file {} from URL {}.".format(rec_id, url))
         if content_length:
-            self.debug_logger.debug("Download size: {:,.0f} bytes.".format(int(content_length)))
+            self.debug_logger.debug("File size: {:,.0f} bytes.".format(int(content_length)))
         if file_type:
             filename = r.headers["Content-Disposition"].split("filename=")[-1]
         else:
@@ -1609,14 +1639,39 @@ class Connection():
         if directory:
             filename = os.path.join(directory,filename)
         fout = open(filename, "wb")
-        # Download in chunks of 512 bytes
         if get_stream:
             return r
+        # Download in chunks of 512 bytes
         for line in r.iter_content(chunk_size=512):
             fout.write(line)
         fout.close()
         self.debug_logger.debug("Download complete: {}.".format(filename))
         return filename
+
+    def s3_object_path(self, rec_id, url=False):
+        """
+        Given an ENCODE File object's id (such as accession, uuid, alias), returns the full S3 object
+        URI, or HTTP/HTTPS URI if url=True. 
+
+        Args:
+            rec_id: `str`. A DCC object identifier of the record to link the document to.
+            url: `bool`. True means to return the HTTP/HTTPS URI of the file rather than the S3 URI.
+                 Useful if this is a released file since you can download via the URL.
+        """
+        response = self.download(rec_id=rec_id, get_stream=True)
+        redirect_url = response.url
+        # i.e. redirect_url is
+        # https://download.encodeproject.org/https://encode-files.s3.amazonaws.com/2017/05/12/4ae28
+        # cf4-c0a7-409f-8d8d-384ba692096a/ENCFF985JCJ.bigWig?response-content-disposition=attachment%3B%2 ...
+        url_obj = urllib.parse.urlsplit(redirect_url)
+        url_path = url_obj.path.lstrip("/")
+        # i.e. url_path is 'https://encode-files.s3.amazonaws.com/2017/05/12/4ae28cf4-c0a7-409f-8d8d-384ba692096a/ENCFF985JCJ.bigWig'
+        if url:
+            return url_path
+        s3_uri = url_path.replace(url_obj.scheme, "s3")
+        s3_uri = s3_uri.replace(".s3.amazonaws.com", "")
+        print(s3_uri)
+        return s3_uri
 
     def link_document(self, rec_id, document_id):
         """
