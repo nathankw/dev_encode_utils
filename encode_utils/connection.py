@@ -953,3 +953,37 @@ class Connection():
                 encid = response_json["uuid"]
             self._log_post(aliases=aliases, dcc_id=encid)
             # Run 'after' hooks:
+            self.after_submit_hooks(encid, profile_id, method=self.POST)
+            return response_json
+        elif response.status_code == requests.codes.CONFLICT:
+            self.debug_logger.debug(response_json)
+            # In the case of paired-end FASTQ files, it could also mean that there was a conflict
+            # related to the 'paired_with' property, i.e. the latter is already linked to a FASTQ
+            # file, which could even have been set to a deleted state on the Portal. The server
+            # response in either case would look something like this:
+            #
+            # {
+            #   'detail': "Keys conflict: [('file:paired_with', 'f39320d9-0970-4369-b680-5965a5e85b6f')]",
+            #   'description': 'There was a conflict when trying to complete your request.',
+            #   'code': 409,
+            #   '@type': ['HTTPConflict', 'Error'],
+            #   'title': 'Conflict',
+            #   'status': 'error'}
+            # }
+            #
+            if no_alias:
+                response.raise_for_status()
+            else:
+                existing_record = self.get(rec_ids=aliases, ignore404=True)
+                if not existing_record:
+                    response.raise_for_status()
+                else:
+                    self.log_error("Will not POST '{}' since it already exists with aliases '{}'.".format(aliases[0], existing_record["aliases"]))
+                    return existing_record
+
+        else:
+            message = f"Failed to POST {aliases[0]}"
+            self.log_error(message)
+            self.debug_logger.debug("<<<<<< DCC POST RESPONSE: ")
+            self.debug_logger.debug(euu.print_format_dict(response_json))
+            response.raise_for_status()
